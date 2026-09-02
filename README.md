@@ -9,10 +9,6 @@ Shows visitors / pageviews in the bar, with a details panel for website selectio
 
 ```sh
 omarchy plugin add https://github.com/openwebtrack/omarchy-plugin.git --enable
-# or manually:
-git clone https://github.com/openwebtrack/omarchy-plugin.git ~/.config/omarchy/plugins/openwebtrack.omarchy-plugin
-omarchy-shell shell rescanPlugins
-omarchy plugin enable openwebtrack.omarchy-plugin
 ```
 
 ## Configure
