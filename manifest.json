@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "id": "openwebtrack.omarchy-plugin",
+  "name": "OpenWebTrack",
+  "version": "1.0.0",
+  "author": "ge0rg3e",
+  "license": "MIT",
+  "description": "Website stats from OpenWebTrack.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OpenWebTrack",
+    "description": "Configure in the panel.",
+    "category": "Web",
+    "allowMultiple": false,
+    "defaults": {
+      "instanceUrl": "http://localhost:8424",
+      "mcpKey": "",
+      "sitesJson": "[{\"id\":\"00000000-0000-0000-0000-000000000000\",\"name\":\"example.com\",\"apiKey\":\"owt_...\"}]",
+      "selectedId": "",
+      "period": "7d",
+      "granularity": "daily",
+      "refreshIntervalSec": 300
+    },
+    "schema": [
+      {
+        "key": "instanceUrl",
+        "type": "string",
+        "label": "Instance URL",
+        "defaultValue": "http://localhost:8424",
+        "description": "Base URL of your OpenWebTrack instance, e.g. http://localhost:8424 or https://analytics.example.com (no trailing slash)."
+      },
+      {
+        "key": "mcpKey",
+        "type": "string",
+        "label": "MCP Key (owt_mcp_...)",
+        "defaultValue": "",
+        "description": "Account MCP key owt_mcp_... from /account/mcp — lists all websites and gives full analytics. Recommended; no Website ID needed."
+      },
+      {
+        "key": "sitesJson",
+        "type": "string",
+        "label": "Websites (JSON) — fallback per-site",
+        "defaultValue": "[{\"id\":\"00000000-0000-0000-0000-000000000000\",\"name\":\"example.com\",\"apiKey\":\"owt_...\"}]",
+        "description": "Fallback when no MCP key: JSON array of {id, name, apiKey}. id is UUID, apiKey is owt_... per site."
+      },
+      {
+        "key": "selectedId",
+        "type": "string",
+        "label": "Selected website ID",
+        "defaultValue": "",
+        "description": "UUID of the currently selected website. Set via the panel dropdown; you can also preset it here."
+      },
+      {
+        "key": "period",
+        "type": "enum",
+        "label": "Default period",
+        "options": ["24h", "7d", "30d", "90d"],
+        "defaultValue": "7d",
+        "description": "Default date range for v1 stats. 24h = last 24 hours, 7d = last 7 days, etc. Overridable in the panel."
+      },
+      {
+        "key": "granularity",
+        "type": "enum",
+        "label": "Default granularity",
+        "options": ["hourly", "daily", "weekly", "monthly"],
+        "defaultValue": "daily",
+        "description": "Bucket size for timeSeries. Must be provided to GET /api/v1/[websiteId]/stats?granularity=..."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300,
+        "description": "Poll interval for the bar widget. Also used as the panel auto-refresh timer."
+      }
+    ]
+  }
+}
