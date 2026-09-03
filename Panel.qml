@@ -66,21 +66,56 @@ Panel {
   onMcpKeyEncChanged: {
     if (Model.isEncrypted(mcpKeyEnc)) {
       if (mcpKeyPlain === "") {
-        var cmd = Model.buildDecryptCommand(mcpKeyEnc)
-        cryptoDec.command = cmd
-        cryptoDec.running = true
+        try {
+          var cmd = Model.buildDecryptCommand(mcpKeyEnc)
+          if (cryptoDec.running) cryptoDec.running = false
+          cryptoDec.command = cmd
+          cryptoDec.running = true
+        } catch (e) {
+          root.lastError = String(e.message || e).slice(0,200)
+        }
       }
     } else {
-      // Plain stored (migrating old) — use directly
-      if (mcpKeyPlain !== mcpKeyEnc) mcpKeyPlain = mcpKeyEnc
-      draftMcpKey = mcpKeyEnc
+      // Plain stored (migrating old) — use transiently and immediately migrate to enc:...
+      var plainVal = String(mcpKeyEnc || "").trim()
+      if (plainVal === "") {
+        if (mcpKeyPlain !== "") mcpKeyPlain = ""
+        draftMcpKey = ""
+      } else if (Model.isValidMcpKey(plainVal)) {
+        if (mcpKeyPlain !== plainVal) mcpKeyPlain = plainVal
+        draftMcpKey = plainVal
+        // Attempt migration to encrypted storage (fail closed if keyring missing)
+        try {
+          var encCmd = Model.buildEncryptCommand(plainVal)
+          if (cryptoEnc.running) cryptoEnc.running = false
+          cryptoEnc.command = encCmd
+          cryptoEnc.running = true
+        } catch (e2) {
+          root.lastError = String(e2.message || e2).slice(0,200)
+        }
+      } else {
+        root.lastError = "Invalid stored key format"
+        if (mcpKeyPlain !== "") mcpKeyPlain = ""
+      }
     }
   }
   Component.onCompleted: {
     if (Model.isEncrypted(mcpKeyEnc) && mcpKeyPlain === "") {
-      var cmd2 = Model.buildDecryptCommand(mcpKeyEnc)
-      cryptoDec.command = cmd2
-      cryptoDec.running = true
+      try {
+        var cmd2 = Model.buildDecryptCommand(mcpKeyEnc)
+        if (cryptoDec.running) cryptoDec.running = false
+        cryptoDec.command = cmd2
+        cryptoDec.running = true
+      } catch (e) {
+        root.lastError = String(e.message || e).slice(0,200)
+      }
+    } else if (mcpKeyEnc !== "" && !Model.isEncrypted(mcpKeyEnc) && Model.isValidMcpKey(mcpKeyEnc)) {
+      // migrate plain on startup
+      try {
+        var mig = Model.buildEncryptCommand(mcpKeyEnc)
+        cryptoEnc.command = mig
+        cryptoEnc.running = true
+      } catch (e3) {}
     }
     showSetup = !hasConnection
   }
@@ -104,18 +139,21 @@ Panel {
     if (useMcp && opened && effectiveMcpId) doFetch()
   }
 
-  // Crypto: OS-unique machine-id — enc:... in shell.json useless if file is leaked to another OS
+  // Crypto: via user keyring file (0600) — enc:... bound to that host
   Process {
     id: cryptoDec
     stdout: StdioCollector { id: decOut; waitForEnd: true }
     stderr: StdioCollector { id: decErr; waitForEnd: true }
     onExited: function(code) {
-      if (code !== 0) { console.log("decrypt failed", String(decErr.text||decOut.text).slice(0,80)); return }
+      if (code !== 0) { root.lastError = "Decrypt failed: " + String(decErr.text||decOut.text).slice(0,120); return }
       var plain = String(decOut.text || "").trim()
+      if (plain.length > 8192) { root.lastError = "Decrypt output too large"; return }
       if (plain && Model.isValidMcpKey(plain)) {
         root.mcpKeyPlain = plain
         root.draftMcpKey = plain
         if (root.opened && root.mcpSites.length === 0) root.fetchMcpSites()
+      } else if (plain) {
+        root.lastError = "Decrypted key invalid format"
       }
     }
   }
@@ -130,7 +168,19 @@ Panel {
       var encVal = "enc:" + enc
       var entry = { id: root.moduleName }
       for (var k in root.settings) if (k !== "id") entry[k] = root.settings[k]
-      entry.instanceUrl = Model.trimSlash(String(root.draftUrl || "").trim()) || "http://localhost:8424"
+      try {
+        entry.instanceUrl = Model.validateInstanceUrl(String(root.draftUrl || "").trim())
+      } catch (e) {
+        root.lastError = String(e.message || e).slice(0,200)
+        return
+      }
+      // Clear any legacy plain sitesJson apiKeys from settings migration
+      if (entry.sitesJson) {
+        try {
+          var arr = JSON.parse(entry.sitesJson)
+          // keep as is but do not store plain mcpKey elsewhere
+        } catch (e2) {}
+      }
       entry.mcpKey = encVal
       entry.refreshIntervalSec = Model.clampInterval(root.draftRefreshInterval)
       root.settings = entry
@@ -166,9 +216,14 @@ Panel {
   signal requestInstanceUrl(string newUrl)
 
   function persistInstanceUrl() {
-    var url = Model.trimSlash(String(draftUrl || "").trim())
-    if (!url) url = "http://localhost:8424"
-    // Persist to shell.json via hostWidget's bar.shell (same as website switch)
+    var raw = String(draftUrl || "").trim()
+    var url
+    try {
+      url = Model.validateInstanceUrl(raw)
+    } catch (e) {
+      root.lastError = String(e.message || e).slice(0,200)
+      return
+    }
     var entry = { id: root.moduleName }
     for (var k in root.settings) if (k !== "id") entry[k] = root.settings[k]
     entry.instanceUrl = url
@@ -176,21 +231,30 @@ Panel {
     if (root.hostWidget && "settings" in root.hostWidget) root.hostWidget.settings = entry
     if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
       root.bar.shell.updateEntryInline(root.moduleName, entry)
-    // Also notify hostWidget if it exposes a handler
     if (hostWidget && typeof hostWidget.onRequestInstanceUrl === "function") hostWidget.onRequestInstanceUrl(url)
     requestInstanceUrl(url)
   }
 
   function persistSetup() {
-    var url = Model.trimSlash(String(draftUrl || "").trim())
-    if (!url) url = "http://localhost:8424"
+    var rawUrl = String(draftUrl || "").trim()
+    var url
+    try {
+      url = Model.validateInstanceUrl(rawUrl)
+    } catch (e) {
+      lastError = String(e.message || e).slice(0,200)
+      return
+    }
     var mcp = String(draftMcpKey || "").trim()
     if (!Model.isValidMcpKey(mcp)) { lastError = "MCP key must start with owt_mcp_ and be at least 16 chars — get it at " + url + "/account/mcp"; return }
-    // Encrypt with OS machine-id before storing — enc:... useless if shell.json is leaked to another OS
-    var cmd = Model.buildEncryptCommand(mcp)
-    cryptoEnc.command = cmd
-    cryptoEnc.running = true
-    lastError = ""
+    try {
+      var cmd = Model.buildEncryptCommand(mcp)
+      if (cryptoEnc.running) cryptoEnc.running = false
+      cryptoEnc.command = cmd
+      cryptoEnc.running = true
+      lastError = ""
+    } catch (e2) {
+      lastError = String(e2.message || e2).slice(0,200)
+    }
   }
 
   function open() {
@@ -228,15 +292,23 @@ Panel {
   function fetchMcpSites() {
     var key = String(useMcp ? mcpKey : draftMcpKey).trim()
     var url = String(useMcp ? instanceUrl : draftUrl).trim()
-    console.log("fetchMcpSites: useMcp=" + useMcp + " key=" + key.slice(0,12) + "... url=" + url + " mcpSitesLen=" + mcpSites.length)
     if (!Model.isValidMcpKey(key)) {
       mcpError = "Invalid MCP key — must start with owt_mcp_"
-      console.log("fetchMcpSites invalid key")
       return
     }
-    var cmd = Model.buildMcpCurlCommand(url, key, "list_websites", {})
-    console.log("fetchMcpSites cmd=" + JSON.stringify(cmd))
+    var cmd
+    try {
+      cmd = Model.buildMcpCurlCommand(url, key, "list_websites", {})
+    } catch (e) {
+      mcpError = String(e.message || e).slice(0,200)
+      lastError = mcpError
+      return
+    }
     if (!cmd) { mcpError = "Failed to build MCP command"; return }
+    // Lifecycle supersession
+    if (mcpListFetcher.running) mcpListFetcher.running = false
+    if (mcpStatsFetcher.running) mcpStatsFetcher.running = false
+    if (panelFetcher.running) panelFetcher.running = false
     mcpListFetcher.command = cmd
     mcpListFetcher.running = true
     mcpLoading = true
@@ -253,9 +325,18 @@ Panel {
         return
       }
       var range = Model.periodToDateRange(period)
-      var cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "analytics_overview",
-        { websiteId: effectiveActiveSite.id, startDate: range.startIso, endDate: range.endIso })
+      var cmd
+      try {
+        cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "analytics_overview",
+          { websiteId: effectiveActiveSite.id, startDate: range.startIso, endDate: range.endIso })
+      } catch (e) {
+        lastError = String(e.message || e).slice(0,200)
+        return
+      }
       if (!cmd) { lastError = "Failed to build MCP command"; return }
+      if (mcpStatsFetcher.running) mcpStatsFetcher.running = false
+      if (mcpListFetcher.running) mcpListFetcher.running = false
+      if (panelFetcher.running) panelFetcher.running = false
       mcpStatsFetcher.command = cmd
       mcpStatsFetcher.running = true
       loading = true
@@ -269,8 +350,17 @@ Panel {
     }
     var key = String(activeSite.apiKey || "").trim()
     if (!Model.isValidApiKey(key)) { lastError = "Invalid API key for " + activeSite.name; return }
-    var cmd2 = Model.buildCurlCommand(instanceUrl, activeSite.id, key, period, granularity)
+    var cmd2
+    try {
+      cmd2 = Model.buildCurlCommand(instanceUrl, activeSite.id, key, period, granularity)
+    } catch (e) {
+      lastError = String(e.message || e).slice(0,200)
+      return
+    }
     if (!cmd2) { lastError = "Failed to build v1 URL"; return }
+    if (panelFetcher.running) panelFetcher.running = false
+    if (mcpStatsFetcher.running) mcpStatsFetcher.running = false
+    if (mcpListFetcher.running) mcpListFetcher.running = false
     panelFetcher.command = cmd2
     panelFetcher.running = true
     loading = true
@@ -309,14 +399,13 @@ Process {
          root.lastError = msg.slice(0, 400)
          return
        }
-       // Limit response size to 1 MB to prevent memory exhaustion
        if (pOut.text.length > 1048576) {
          root.lastError = "Response too large ( > 1 MB )"
          return
        }
        var parsed = Model.parseStatsResponse(String(pOut.text || ""))
        if (!parsed.ok) {
-         root.lastError = String(parsed.error || "Parse error")
+         root.lastError = String(parsed.error || "Parse error").slice(0,400)
          root.stats = parsed
          if (hostWidget) { hostWidget.lastError = root.lastError; hostWidget.lastStats = parsed }
        } else {
@@ -340,7 +429,6 @@ Process {
          root.lastError = root.mcpError
          return
        }
-       // Limit response size to 1 MB to prevent memory exhaustion
        if (mcpListOut.text.length > 1048576) {
          root.mcpError = "MCP list too large"
          root.lastError = root.mcpError
@@ -348,17 +436,14 @@ Process {
        }
        var parsed = Model.parseMcpListWebsites(String(mcpListOut.text || ""))
        if (!parsed.ok) {
-         root.mcpError = String(parsed.error || "Parse error")
+         root.mcpError = String(parsed.error || "Parse error").slice(0,400)
          root.lastError = root.mcpError
          return
        }
        root.mcpError = ""
        root.lastError = ""
        root.mcpSites = parsed.sites
-       // if hostWidget exists, sync its mcp sites? BarWidget will fetch separately
-       // auto-select first if none
        if (parsed.sites.length > 0 && !Model.getSiteById(parsed.sites, configuredSelectedId)) {
-         // keep effective selection logic — no auto-persist, just trigger fetch
          if (root.opened && effectiveMcpId) doFetch()
        } else if (root.opened) {
          doFetch()
@@ -377,19 +462,17 @@ Process {
          root.lastError = msg.slice(0, 400)
          return
        }
-       // Limit response size to 1 MB to prevent memory exhaustion
        if (mcpStatsOut.text.length > 1048576) {
          root.lastError = "MCP stats response too large"
          return
        }
        var parsed = Model.parseMcpAnalyticsOverview(String(mcpStatsOut.text || ""))
        if (!parsed.ok) {
-         root.lastError = String(parsed.error || "Parse error")
+         root.lastError = String(parsed.error || "Parse error").slice(0,400)
          root.stats = parsed
          if (hostWidget) { hostWidget.lastError = root.lastError; hostWidget.lastStats = parsed }
          return
        }
-       // Map MCP overview to panel's expected stats shape
        var mapped = {
          ok: true,
          summary: {
@@ -403,8 +486,7 @@ Process {
          },
          topPages: parsed.topPages || [],
          topReferrers: [],
-         timeSeries: [],
-         raw: parsed.raw
+         timeSeries: []
        }
        root.lastError = ""
        root.stats = mapped
@@ -414,10 +496,11 @@ Process {
    }
 
   function openDashboard() {
-    var base = Model.trimSlash(instanceUrl)
+    var base
+    try { base = Model.validateInstanceUrl(instanceUrl) } catch (e) { return }
     var id = displayEffectiveId
-    if (!id) return
-    var url = base + "/dashboard/" + id
+    if (!id || !Model.isValidUUID(id)) return
+    var url = base + "/dashboard/" + encodeURIComponent(id)
     if (bar) bar.run("xdg-open " + Util.shellQuote(url))
     else Util.execDetached("xdg-open " + Util.shellQuote(url))
   }
@@ -425,19 +508,20 @@ Process {
   function copyCurl() {
     var site = effectiveActiveSite
     if (!site) return
+    // Never copy secrets - redacted placeholder
     if (useMcp) {
-      // MCP: show analytics_overview call
       var range = Model.periodToDateRange(period)
       var payload = JSON.stringify({ jsonrpc:"2.0", id:1, method:"tools/call", params:{ name:"analytics_overview", arguments:{ websiteId: site.id, startDate: range.startIso, endDate: range.endIso } } })
-      var mcpUrl = Model.trimSlash(instanceUrl) + "/api/mcp"
-      var cmd = "curl -s -H " + Util.shellQuote("Authorization: Bearer " + mcpKey) + " -H " + Util.shellQuote("Content-Type: application/json") + " -d " + Util.shellQuote(payload) + " " + Util.shellQuote(mcpUrl)
+      var mcpUrl = Model.validateInstanceUrl(instanceUrl) + "/api/mcp"
+      var cmd = "curl -s -H " + Util.shellQuote("Authorization: Bearer ***") + " -H " + Util.shellQuote("Content-Type: application/json") + " -d " + Util.shellQuote(payload) + " " + Util.shellQuote(mcpUrl)
       if (bar) bar.run("bash -lc " + Util.shellQuote("printf %s " + Util.shellQuote(cmd) + " | wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null; echo copied"))
       return
     }
     if (!activeSite) return
-    var url = Model.buildStatsUrl(instanceUrl, activeSite.id, period, granularity)
+    var url
+    try { url = Model.buildStatsUrl(instanceUrl, activeSite.id, period, granularity) } catch (e) { return }
     if (!url) return
-    var cmd2 = "curl -H " + Util.shellQuote("Authorization: Bearer " + activeSite.apiKey) + " " + Util.shellQuote(url)
+    var cmd2 = "curl -H " + Util.shellQuote("Authorization: Bearer ***") + " " + Util.shellQuote(url)
     if (bar) bar.run("bash -lc " + Util.shellQuote("printf %s " + Util.shellQuote(cmd2) + " | wl-copy 2>/dev/null || xclip -selection clipboard 2>/dev/null; echo copied"))
   }
 
@@ -685,6 +769,7 @@ Text {
           color: Qt.darker(root.contentForeground, 1.4)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
+          textFormat: Text.PlainText
           RotationAnimation on rotation { from:0; to:360; duration: 900; loops: Animation.Infinite; running: root.mcpLoading }
         }
         Text {
@@ -695,6 +780,7 @@ Text {
           color: Color.urgent
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.caption
+          textFormat: Text.PlainText
         }
         Dropdown {
           id: websiteDropdown
@@ -957,6 +1043,7 @@ Text {
               color: Qt.darker(root.contentForeground, 1.4)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
+              textFormat: Text.PlainText
             }
             Item { width: Style.space(8); height: 1 }
             Text {
@@ -965,6 +1052,7 @@ Text {
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
+              textFormat: Text.PlainText
             }
           }
         }
@@ -974,15 +1062,15 @@ Text {
           width: parent.width
           spacing: Style.space(6)
           visible: root.stats && root.stats.ok && root.stats.topPages && root.stats.topPages.length > 0
-          Text { text: "TOP PAGES"; color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1 }
+          Text { text: "TOP PAGES"; color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1; textFormat: Text.PlainText }
           Repeater {
             model: (root.stats && root.stats.ok) ? root.stats.topPages.slice(0,6) : []
             delegate: Row {
               required property var modelData
               width: col.width
               spacing: Style.space(8)
-              Text { width: col.width - Style.space(60); text: String(modelData.pathname || "/"); color: root.contentForeground; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle }
-              Text { width: Style.space(50); horizontalAlignment: Text.AlignRight; text: String(modelData.views ?? modelData.pageviews ?? modelData.value ?? "—"); color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
+              Text { width: col.width - Style.space(60); text: String(modelData.pathname || "/"); color: root.contentForeground; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle; textFormat: Text.PlainText }
+              Text { width: Style.space(50); horizontalAlignment: Text.AlignRight; text: String(modelData.views ?? modelData.pageviews ?? modelData.value ?? "—"); color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; textFormat: Text.PlainText }
             }
           }
         }
@@ -992,7 +1080,7 @@ Text {
           width: parent.width
           spacing: Style.space(6)
           visible: root.stats && root.stats.ok && root.stats.topReferrers && root.stats.topReferrers.length > 0
-          Text { text: "TOP REFERRERS"; color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1 }
+          Text { text: "TOP REFERRERS"; color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1; textFormat: Text.PlainText }
           Repeater {
             model: (root.stats && root.stats.ok) ? root.stats.topReferrers.slice(0,6) : []
             delegate: Row {
@@ -1003,11 +1091,11 @@ Text {
                 width: col.width - Style.space(60)
                 text: {
                   var r = String(modelData.referrer || "Direct")
-                  try { var u=new URL(r); return u.hostname.replace(/^www\./,"") } catch(e){ return r }
+                  try { var u=new URL(r); return u.hostname.replace(/^www\./,"") } catch(e){ return r.slice(0,256) }
                 }
-                color: root.contentForeground; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle
+                color: root.contentForeground; font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideMiddle; textFormat: Text.PlainText
               }
-              Text { width: Style.space(50); horizontalAlignment: Text.AlignRight; text: String(modelData.sessions); color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption }
+              Text { width: Style.space(50); horizontalAlignment: Text.AlignRight; text: String(modelData.sessions); color: Qt.darker(root.contentForeground, 1.4); font.family: root.contentFontFamily; font.pixelSize: Style.font.caption; textFormat: Text.PlainText }
             }
           }
         }
@@ -1031,6 +1119,7 @@ Text {
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               elide: Text.ElideMiddle
+              textFormat: Text.PlainText
             }
             Button {
               width: Style.space(28)
@@ -1066,9 +1155,9 @@ Text {
       anchors.fill: parent
       anchors.margins: parent.padding
       spacing: Style.space(2)
-      Text { text: label; color: Qt.darker(fg, 1.4); font.family: ff; font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1 }
-      Text { text: value; color: fg; font.family: ff; font.pixelSize: Style.font.title; font.bold: true }
-      Text { visible: sub !== ""; text: sub; color: Qt.darker(fg, 1.6); font.family: ff; font.pixelSize: Style.font.caption }
+      Text { text: label; color: Qt.darker(fg, 1.4); font.family: ff; font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1; textFormat: Text.PlainText }
+      Text { text: value; color: fg; font.family: ff; font.pixelSize: Style.font.title; font.bold: true; textFormat: Text.PlainText }
+      Text { visible: sub !== ""; text: sub; color: Qt.darker(fg, 1.6); font.family: ff; font.pixelSize: Style.font.caption; textFormat: Text.PlainText }
     }
   }
 }

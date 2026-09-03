@@ -7,12 +7,12 @@ import "Model.js" as Model
 
 
 // BarWidget for OpenWebTrack - shows selected website's visitors/pageviews
-// Polls via MCP owt_mcp_... (encrypted with OS machine-id) or fallback /api/v1 owt_...
+// Polls via MCP owt_mcp_... (encrypted with user keyring 0600) or fallback /api/v1 owt_...
 BarWidget {
   id: root
   moduleName: "openwebtrack.omarchy-plugin"
 
-  // ---- settings from shell.json / manifest — mcpKey stored as enc:... (machine-id)
+  // ---- settings from shell.json / manifest — mcpKey stored as enc:... (keyring 0600, fail-closed)
   readonly property string instanceUrl: String(setting("instanceUrl", "http://localhost:8424"))
   readonly property string mcpKeyEnc: String(setting("mcpKey", ""))
   property string mcpKeyPlain: Model.isEncrypted(mcpKeyEnc) ? "" : mcpKeyEnc
@@ -40,12 +40,25 @@ BarWidget {
   onMcpKeyEncChanged: {
     if (Model.isEncrypted(mcpKeyEnc)) {
       if (mcpKeyPlain === "") {
-        var cmd = Model.buildDecryptCommand(mcpKeyEnc)
-        cryptoDec.command = cmd
-        cryptoDec.running = true
+        try {
+          var cmd = Model.buildDecryptCommand(mcpKeyEnc)
+          if (cryptoDec.running) cryptoDec.running = false
+          cryptoDec.command = cmd
+          cryptoDec.running = true
+        } catch (e) {
+          root.lastError = String(e.message || e).slice(0,200)
+        }
       }
     } else {
-      if (mcpKeyPlain !== mcpKeyEnc) mcpKeyPlain = mcpKeyEnc
+      var plainVal = String(mcpKeyEnc || "").trim()
+      if (plainVal === "" ) {
+        if (mcpKeyPlain !== "") mcpKeyPlain = ""
+      } else if (Model.isValidMcpKey(plainVal)) {
+        if (mcpKeyPlain !== plainVal) mcpKeyPlain = plainVal
+      } else {
+        if (mcpKeyPlain !== "") mcpKeyPlain = ""
+        root.lastError = "Invalid stored key format"
+      }
     }
   }
 
@@ -54,11 +67,14 @@ BarWidget {
     stdout: StdioCollector { id: decOut; waitForEnd: true }
     stderr: StdioCollector { id: decErr; waitForEnd: true }
     onExited: function(code) {
-      if (code !== 0) { console.log("Bar decrypt failed", String(decErr.text||decOut.text).slice(0,80)); return }
+      if (code !== 0) { root.lastError = "Decrypt failed: " + String(decErr.text||decOut.text).slice(0,120); return }
       var plain = String(decOut.text || "").trim()
+      if (plain.length > 8192) { root.lastError = "Decrypt output too large"; return }
       if (plain && Model.isValidMcpKey(plain)) {
         root.mcpKeyPlain = plain
         if (root.mcpSites.length === 0) Qt.callLater(root.fetchMcpSites)
+      } else if (plain) {
+        root.lastError = "Decrypted key invalid"
       }
     }
   }
@@ -114,8 +130,17 @@ BarWidget {
 
   function fetchMcpSites() {
     if (!Model.isValidMcpKey(mcpKey)) { lastError = "Configure MCP key owt_mcp_... in panel"; return }
-    var cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "list_websites", {})
+    var cmd
+    try {
+      cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "list_websites", {})
+    } catch (e) {
+      lastError = String(e.message || e).slice(0,200)
+      return
+    }
     if (!cmd) { lastError = "Failed to build MCP command"; return }
+    if (mcpListFetcher.running) mcpListFetcher.running = false
+    if (mcpFetcher.running) mcpFetcher.running = false
+    if (fetcher.running) fetcher.running = false
     mcpListFetcher.command = cmd
     mcpListFetcher.running = true
     mcpLoading = true
@@ -127,9 +152,18 @@ BarWidget {
       if (mcpSites.length === 0) { fetchMcpSites(); return }
       if (!effectiveActiveSite) { lastError = "No website selected"; return }
       var range = Model.periodToDateRange(period)
-      var cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "analytics_overview",
-        { websiteId: effectiveActiveSite.id, startDate: range.startIso, endDate: range.endIso })
+      var cmd
+      try {
+        cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "analytics_overview",
+          { websiteId: effectiveActiveSite.id, startDate: range.startIso, endDate: range.endIso })
+      } catch (e) {
+        lastError = String(e.message || e).slice(0,200)
+        return
+      }
       if (!cmd) { lastError = "Failed to build MCP command"; return }
+      if (mcpFetcher.running) mcpFetcher.running = false
+      if (mcpListFetcher.running) mcpListFetcher.running = false
+      if (fetcher.running) fetcher.running = false
       mcpFetcher.command = cmd
       mcpFetcher.running = true
       loading = true
@@ -140,25 +174,35 @@ BarWidget {
     if (!activeSite) { lastError = "No website selected"; return }
     var key = String(activeSite.apiKey || "").trim()
     if (!Model.isValidApiKey(key)) { lastError = "Invalid API key for " + activeSite.name; return }
-    var cmd2 = Model.buildCurlCommand(instanceUrl, activeSite.id, key, period, granularity)
+    var cmd2
+    try {
+      cmd2 = Model.buildCurlCommand(instanceUrl, activeSite.id, key, period, granularity)
+    } catch (e) {
+      lastError = String(e.message || e).slice(0,200)
+      return
+    }
     if (!cmd2) { lastError = "Failed to build v1 URL"; return }
+    if (fetcher.running) fetcher.running = false
+    if (mcpFetcher.running) mcpFetcher.running = false
+    if (mcpListFetcher.running) mcpListFetcher.running = false
     fetcher.command = cmd2
     fetcher.running = true
     loading = true
   }
 
   function openDashboard() {
-    var base = Model.trimSlash(instanceUrl)
-    if (!base) base = "http://localhost:8424"
+    var base
+    try { base = Model.validateInstanceUrl(instanceUrl) } catch (e) { return }
     var url = base + "/dashboard"
     if (bar) bar.run("xdg-open " + Util.shellQuote(url))
     else Util.execDetached("xdg-open " + Util.shellQuote(url))
   }
   function openSiteDashboard() {
     var siteId = displayEffectiveId
-    if (!siteId) return openDashboard()
-    var base = Model.trimSlash(instanceUrl)
-    var url = base + "/dashboard/" + siteId
+    if (!siteId || !Model.isValidUUID(siteId)) return openDashboard()
+    var base
+    try { base = Model.validateInstanceUrl(instanceUrl) } catch (e) { return }
+    var url = base + "/dashboard/" + encodeURIComponent(siteId)
     if (bar) bar.run("xdg-open " + Util.shellQuote(url))
     else Util.execDetached("xdg-open " + Util.shellQuote(url))
   }
@@ -288,57 +332,63 @@ Process {
         root.lastError = msg.slice(0,220)
         return
       }
+      if (mcpListOut.text.length > 1048576) { root.lastError = "MCP list too large"; return }
       var parsed = Model.parseMcpListWebsites(String(mcpListOut.text || ""))
       if (!parsed.ok) { root.lastError = String(parsed.error||"MCP error").slice(0,220); return }
       root.mcpSites = parsed.sites
       root.lastError = ""
       if (root.effectiveActiveSite) Qt.callLater(refresh)
-      // sync to panel if open
       if (panelLoader.item && "mcpSites" in panelLoader.item) panelLoader.item.mcpSites = parsed.sites
     }
   }
 
   Process {
-    id: mcpFetcher
-    stdout: StdioCollector { id: mcpOut; waitForEnd: true }
-    stderr: StdioCollector { id: mcpErr; waitForEnd: true }
-    onExited: function(code) {
-      root.loading = false
-      if (code !== 0) {
-        var msg = String(mcpErr.text || mcpOut.text || "").trim() || ("curl exited " + code)
-        root.lastError = msg.slice(0,220)
-        if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult({ ok:false, error: root.lastError })
-        return
-      }
-      var parsed = Model.parseMcpAnalyticsOverview(String(mcpOut.text || ""))
-      if (!parsed.ok) {
-        root.lastError = String(parsed.error||"Parse error").slice(0,220)
-        var fail = { ok:false, error: root.lastError }
-        root.lastStats = fail
-        if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(fail)
-        return
-      }
-      var mapped = {
-        ok: true,
-        summary: {
-          pageviews: parsed.summary.pageviews,
-          sessions: parsed.summary.sessions,
-          visitors: parsed.summary.visitors,
-          bounceRate: parsed.summary.bounceRate || 0,
-          revenue: parsed.summary.revenue || 0,
-          currency: parsed.summary.currency || "USD",
-          dateRange: parsed.summary.dateRange || null
-        },
-        topPages: parsed.topPages || [],
-        topReferrers: [],
-        timeSeries: [],
-        raw: parsed.raw
-      }
-      root.lastError = ""
-      root.lastStats = mapped
-      root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
-      if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(mapped)
-    }
+     id: mcpFetcher
+     stdout: StdioCollector { id: mcpOut; waitForEnd: true }
+     stderr: StdioCollector { id: mcpErr; waitForEnd: true }
+     onExited: function(code) {
+       root.loading = false
+       if (code !== 0) {
+         var msg = String(mcpErr.text || mcpOut.text || "").trim() || ("curl exited " + code)
+         root.lastError = msg.slice(0,220)
+         if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult({ ok:false, error: root.lastError })
+         return
+       }
+       if (mcpOut.text.length > 1048576) {
+         root.lastError = "MCP stats too large"
+         var fail2 = { ok:false, error: root.lastError }
+         root.lastStats = fail2
+         if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(fail2)
+         return
+       }
+       var parsed = Model.parseMcpAnalyticsOverview(String(mcpOut.text || ""))
+       if (!parsed.ok) {
+         root.lastError = String(parsed.error||"Parse error").slice(0,220)
+         var fail = { ok:false, error: root.lastError }
+         root.lastStats = fail
+         if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(fail)
+         return
+       }
+       var mapped = {
+         ok: true,
+         summary: {
+           pageviews: parsed.summary.pageviews,
+           sessions: parsed.summary.sessions,
+           visitors: parsed.summary.visitors,
+           bounceRate: parsed.summary.bounceRate || 0,
+           revenue: parsed.summary.revenue || 0,
+           currency: parsed.summary.currency || "USD",
+           dateRange: parsed.summary.dateRange || null
+         },
+         topPages: parsed.topPages || [],
+         topReferrers: [],
+         timeSeries: []
+       }
+       root.lastError = ""
+       root.lastStats = mapped
+       root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
+       if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(mapped)
+     }
   }
 
   // Keep panel in sync when hostWidget settings change (website switch)

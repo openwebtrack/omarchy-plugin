@@ -16,7 +16,7 @@ omarchy plugin add https://github.com/openwebtrack/omarchy-plugin.git --enable
 Set in the panel (Setup card) or in `~/.config/omarchy/shell.json` under `openwebtrack.omarchy-plugin`:
 
 * `instanceUrl` — base URL of your OpenWebTrack instance (e.g. `http://localhost:8424`)
-* `mcpKey` — account MCP key `owt_mcp_...` from `/account/mcp` (recommended, encrypted with machine-id)
+* `mcpKey` — account MCP key `owt_mcp_...` from `/account/mcp` (recommended, encrypted via user keyring `~/.config/omarchy/keyring` 0600, fail-closed)
 * `sitesJson` — fallback per-site JSON array `[{"id":"uuid","name":"example.com","apiKey":"owt_..."}]`
 * `period` / `granularity` / `refreshIntervalSec`
 
