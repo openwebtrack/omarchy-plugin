@@ -120,18 +120,26 @@ Panel {
     showSetup = !hasConnection
   }
   onEffectiveIdChanged: {
-    // website changed (per-site mode) -> refetch
+    // website changed (per-site mode) -> refetch, clear stale stats so chart visibly updates
     if (!useMcp) {
-      stats = hostWidget && hostWidget.lastStats ? hostWidget.lastStats : null
+      stats = null
       lastError = ""
+      if (hostWidget) hostWidget.lastStats = null
       if (opened && effectiveId) doFetch()
+      else if (tsCanvas) tsCanvas.requestPaint()
     }
   }
   onEffectiveMcpIdChanged: {
     if (useMcp) {
-      stats = hostWidget && hostWidget.lastStats ? hostWidget.lastStats : null
+      stats = null
       lastError = ""
+      if (hostWidget) hostWidget.lastStats = null
       if (opened && effectiveMcpId) doFetch()
+      else if (tsCanvas) tsCanvas.requestPaint()
+      else {
+        // ensure canvas repaints even when closed so it shows fresh data on next open
+        Qt.callLater(function(){ if (tsCanvas) tsCanvas.requestPaint() })
+      }
     }
   }
   onMcpSitesChanged: {
@@ -893,13 +901,17 @@ Text {
               anchors.margins: Style.space(8)
               property var points: (root.stats && root.stats.timeSeries) ? root.stats.timeSeries.slice(-14) : []
               property var topPages: (root.stats && root.stats.topPages) ? root.stats.topPages.slice(0,6) : []
-              // For MCP without timeSeries, synthesize 7-day visitors from topPages totals
+              // For MCP without timeSeries, synthesize 7-day visitors from summary totals
+              // Explicitly depend on root.stats revision so switching website triggers recompute even when points is empty
+              property var statsRevision: root.stats
               property var chartData: {
+                // touch statsRevision to create QML dependency
+                var revRef = statsRevision
                 if (points && points.length >= 2) return points
                 // fallback: build 7-day mock from summary to match website screenshot
-                if (root.stats && root.stats.ok) {
-                  var total = root.stats.summary.visitors || 193
-                  var rev = root.stats.summary.revenue || 11880
+                if (revRef && revRef.ok) {
+                  var total = revRef.summary.visitors || 193
+                  var rev = revRef.summary.revenue || 11880
                   // shape matching screenshot: Aug26 24, Aug27 25, Aug28 23, Aug29 18, Aug30 32, Sep1 37, Sep2 8, Sep3 1
                   var shape = [24,25,23,18,32,37,8,1]
                   var scale = total / shape.reduce(function(a,b){return a+b},0)
@@ -918,6 +930,8 @@ Text {
               property bool useMcp: root.useMcp
               onPointsChanged: requestPaint()
               onTopPagesChanged: requestPaint()
+              onChartDataChanged: requestPaint()
+              onStatsRevisionChanged: requestPaint()
               onMaxVisitorsChanged: requestPaint()
               onWidthChanged: requestPaint()
               onHeightChanged: requestPaint()
