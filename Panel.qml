@@ -593,7 +593,7 @@ Process {
             }
             Item { width: Style.space(6); height: 1 }
 Text {
-               plaintext: true
+               textFormat: Text.PlainText
                anchors.verticalCenter: parent.verticalCenter
                text: root.lastUpdatedLabel ? ("updated " + root.lastUpdatedLabel) : ""
                color: Qt.darker(root.contentForeground, 1.5)
@@ -828,7 +828,7 @@ Text {
 
         // ---- Error / loading
 Text {
-               plaintext: true
+               textFormat: Text.PlainText
                visible: root.lastError !== ""
                width: parent.width
                wrapMode: Text.Wrap

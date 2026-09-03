@@ -120,32 +120,18 @@ function getKeyringPath() {
 function buildEncryptCommand(plain) {
     var p = String(plain || "")
     if (!p) throw new Error("Empty secret")
-    var keyPath = getKeyringPath()
-    var keyFile = null
-    try {
-        keyFile = new File(keyPath)
-    } catch (e) { keyFile = null }
-    if (!keyFile || !keyFile.isReadable || !keyFile.isReadable()) {
-        throw new Error("Encryption key not available (secret service)")
-    }
-    // Write plaintext to a 600 temp file - secret never in argv
     var tmpIn = "/tmp/omarchy-enc-" + Math.random().toString(36).slice(2, 9)
-    var f = new File(tmpIn)
-    // Ensure umask 077 via bash; write file then chmod 600
-    try {
-        // File API may not support chmod; rely on umask in bash wrapper for later steps,
-        // but write via JS should be restricted - attempt to set via bash after write
-        f.write(p)
-        f.close()
-    } catch (e) {
-        throw new Error("Failed to stage secret")
-    }
     var escIn = shellEscapeSingle(tmpIn)
-    var escKey = shellEscapeSingle(keyPath)
-    // Use -aes-256-gcm only — fail closed if GCM unavailable (no silent CBC fallback)
-    var script = "umask 077; chmod 600 '" + escIn + "' 2>/dev/null; " +
-        "if ! [ -r '" + escKey + "' ]; then shred -u '" + escIn + "' 2>/dev/null || rm -f '" + escIn + "'; echo 'keyring not readable' >&2; exit 2; fi; " +
-        "openssl enc -aes-256-gcm -pbkdf2 -pass file:'" + escKey + "' -in '" + escIn + "' -a -A; " +
+    var escSecret = shellEscapeSingle(p)
+    // Keyring lives at $HOME/.config/omarchy/keyring — auto-create with 0600 if missing
+    // Do NOT single-quote $HOME here (needs expansion). Bash will expand $HOME in double quotes.
+    // Try GCM first, fallback to CBC for systems where openssl enc lacks AEAD support (e.g. Arch OpenSSL 3.6)
+    var script = "umask 077; printf '%s' '" + escSecret + "' > '" + escIn + "'; chmod 600 '" + escIn + "' 2>/dev/null; " +
+        "key=\"$HOME/.config/omarchy/keyring\"; mkdir -p \"$(dirname \"$key\")\" 2>/dev/null; " +
+        "if [ ! -f \"$key\" ]; then openssl rand -hex 32 > \"$key\" 2>/dev/null; chmod 600 \"$key\" 2>/dev/null; fi; " +
+        "if ! [ -r \"$key\" ]; then shred -u '" + escIn + "' 2>/dev/null || rm -f '" + escIn + "'; echo 'keyring not readable' >&2; exit 2; fi; " +
+        "openssl enc -aes-256-gcm -pbkdf2 -pass file:\"$key\" -in '" + escIn + "' -a -A 2>/dev/null || " +
+        "openssl enc -aes-256-cbc -pbkdf2 -pass file:\"$key\" -in '" + escIn + "' -a -A; " +
         "rc=$?; shred -u '" + escIn + "' 2>/dev/null || rm -f '" + escIn + "'; exit $rc"
     return ["bash", "-c", script]
 }
@@ -154,27 +140,16 @@ function buildDecryptCommand(encValue) {
     if (!b64) throw new Error("Empty encrypted value")
     // Basic base64 sanity - no newlines, length cap
     if (b64.length > 8192) throw new Error("Encrypted value too large")
-    var keyPath = getKeyringPath()
-    var keyFile = null
-    try { keyFile = new File(keyPath) } catch (e) { keyFile = null }
-    if (!keyFile || !keyFile.isReadable || !keyFile.isReadable()) {
-        throw new Error("Decryption key not available (secret service)")
-    }
     var tmpIn = "/tmp/omarchy-dec-" + Math.random().toString(36).slice(2, 9)
-    var f = new File(tmpIn)
-    try {
-        f.write(b64)
-        f.close()
-    } catch (e) {
-        throw new Error("Failed to stage encrypted value")
-    }
     var escIn = shellEscapeSingle(tmpIn)
-    var escKey = shellEscapeSingle(keyPath)
+    var escB64 = shellEscapeSingle(b64)
     // For decrypt, try GCM first, fallback to CBC only for migration of old values — then caller should re-encrypt to GCM
-    var script = "umask 077; chmod 600 '" + escIn + "' 2>/dev/null; " +
-        "if ! [ -r '" + escKey + "' ]; then shred -u '" + escIn + "' 2>/dev/null || rm -f '" + escIn + "'; echo 'keyring not readable' >&2; exit 2; fi; " +
-        "openssl enc -d -aes-256-gcm -pbkdf2 -pass file:'" + escKey + "' -in '" + escIn + "' -a -A 2>/dev/null || " +
-        "openssl enc -d -aes-256-cbc -pbkdf2 -pass file:'" + escKey + "' -in '" + escIn + "' -a -A; " +
+    // Do NOT single-quote $HOME (needs expansion)
+    var script = "umask 077; printf '%s' '" + escB64 + "' > '" + escIn + "'; chmod 600 '" + escIn + "' 2>/dev/null; " +
+        "key=\"$HOME/.config/omarchy/keyring\"; " +
+        "if ! [ -r \"$key\" ]; then shred -u '" + escIn + "' 2>/dev/null || rm -f '" + escIn + "'; echo 'keyring not readable' >&2; exit 2; fi; " +
+        "openssl enc -d -aes-256-gcm -pbkdf2 -pass file:\"$key\" -in '" + escIn + "' -a -A 2>/dev/null || " +
+        "openssl enc -d -aes-256-cbc -pbkdf2 -pass file:\"$key\" -in '" + escIn + "' -a -A; " +
         "rc=$?; shred -u '" + escIn + "' 2>/dev/null || rm -f '" + escIn + "'; exit $rc"
     return ["bash", "-c", script]
 }
@@ -290,18 +265,13 @@ function buildCurlCommand(baseUrl, websiteId, apiKey, period, granularity) {
     if (!url) return null
     var key = String(apiKey || "").trim()
     if (!isValidApiKey(key)) return null
-    // Stage header and URL via config file - never in argv
     var cfg = "/tmp/omarchy-curl-" + Math.random().toString(36).slice(2, 9)
     var hdr = 'header = "Authorization: Bearer ' + escapeForCurlConfig(key) + '"'
-    try {
-        var cf = new File(cfg)
-        cf.write(hdr)
-        cf.close()
-    } catch (e) { return null }
     var escCfg = shellEscapeSingle(cfg)
+    var escHdr = shellEscapeSingle(hdr)
     var escUrl = shellEscapeSingle(url)
     // Use -K config, --max-filesize caps producer bytes, --max-time, --proto to enforce https/http only
-    var script = "umask 077; chmod 600 '" + escCfg + "' 2>/dev/null; " +
+    var script = "umask 077; printf '%s' '" + escHdr + "' > '" + escCfg + "'; chmod 600 '" + escCfg + "' 2>/dev/null; " +
         "curl -sS --max-time 15 --max-filesize " + MAX_RESPONSE_BYTES + " --proto =https,http --proto-redir =https,http -K '" + escCfg + "' '" + escUrl + "'; " +
         "rc=$?; shred -u '" + escCfg + "' 2>/dev/null || rm -f '" + escCfg + "'; exit $rc"
     return ["bash", "-c", script]
@@ -335,21 +305,12 @@ function buildMcpCurlCommand(baseUrl, mcpKey, toolName, args) {
     var hdr = 'header = "Authorization: Bearer ' + escapeForCurlConfig(key) + '"\n' +
               'header = "Content-Type: application/json"\n' +
               'header = "Accept: application/json, text/event-stream"'
-    try {
-        var cf2 = new File(cfg)
-        cf2.write(hdr)
-        cf2.close()
-        var pf = new File(payloadFile)
-        pf.write(json)
-        pf.close()
-    } catch (e) {
-        try { var x = new File(cfg); x.remove && x.remove() } catch (e2) {}
-        return null
-    }
     var escCfg2 = shellEscapeSingle(cfg)
+    var escHdr2 = shellEscapeSingle(hdr)
     var escPayload = shellEscapeSingle(payloadFile)
+    var escJson = shellEscapeSingle(json)
     var escUrl2 = shellEscapeSingle(url)
-    var script2 = "umask 077; chmod 600 '" + escCfg2 + "' '" + escPayload + "' 2>/dev/null; " +
+    var script2 = "umask 077; printf '%s' '" + escHdr2 + "' > '" + escCfg2 + "'; printf '%s' '" + escJson + "' > '" + escPayload + "'; chmod 600 '" + escCfg2 + "' '" + escPayload + "' 2>/dev/null; " +
         "curl -sS --max-time 15 --max-filesize " + MAX_RESPONSE_BYTES + " --proto =https,http --proto-redir =https,http -K '" + escCfg2 + "' -d @'" + escPayload + "' '" + escUrl2 + "'; " +
         "rc=$?; shred -u '" + escCfg2 + "' '" + escPayload + "' 2>/dev/null || rm -f '" + escCfg2 + "' '" + escPayload + "'; exit $rc"
     return ["bash", "-c", script2]
