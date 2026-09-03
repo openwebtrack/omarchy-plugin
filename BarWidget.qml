@@ -244,32 +244,38 @@ BarWidget {
     }
   }
 
-  Process {
-    id: fetcher
-    stdout: StdioCollector { id: out; waitForEnd: true }
-    stderr: StdioCollector { id: err; waitForEnd: true }
-    onExited: function(code) {
-      root.loading = false
-      if (code !== 0) {
-        var msg = String(err.text || out.text || "").trim()
-        if (!msg) msg = "curl exited " + code
-        root.lastError = msg.slice(0, 220)
-        if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult({ ok:false, error: root.lastError })
-        return
-      }
-      var text = String(out.text || "")
-      var parsed = Model.parseStatsResponse(text)
-      if (!parsed.ok) {
-        root.lastError = String(parsed.error || "Parse error").slice(0, 220)
-        root.lastStats = parsed
-      } else {
-        root.lastError = ""
-        root.lastStats = parsed
-        root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
-      }
-      if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(parsed)
-    }
-  }
+Process {
+     id: fetcher
+     stdout: StdioCollector { id: out; waitForEnd: true }
+     stderr: StdioCollector { id: err; waitForEnd: true }
+     onExited: function(code) {
+       root.loading = false
+       if (code !== 0) {
+         var msg = String(err.text || out.text || "").trim()
+         if (!msg) msg = "curl exited " + code
+         root.lastError = msg.slice(0, 220)
+         if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult({ ok:false, error: root.lastError })
+         return
+       }
+       // Limit response size to 1 MB to prevent memory exhaustion
+       if (out.text.length > 1048576) {
+         root.lastError = "Response too large ( > 1 MB )"
+         if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult({ ok:false, error: root.lastError })
+         return
+       }
+       var text = String(out.text || "")
+       var parsed = Model.parseStatsResponse(text)
+       if (!parsed.ok) {
+         root.lastError = String(parsed.error || "Parse error").slice(0, 220)
+         root.lastStats = parsed
+       } else {
+         root.lastError = ""
+         root.lastStats = parsed
+         root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
+       }
+       if (panelLoader.item && panelLoader.item.onFetchResult) panelLoader.item.onFetchResult(parsed)
+     }
+   }
 
   Process {
     id: mcpListFetcher

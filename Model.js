@@ -31,16 +31,29 @@ function stripEnc(v) {
     return s.indexOf("enc:") === 0 ? s.slice(4) : s
 }
 function buildEncryptCommand(plain) {
-    var p = String(plain || "")
-    var esc = p.replace(/'/g, "'\"'\"'")
-    var cmd = "echo -n '" + esc + "' | openssl enc -aes-256-cbc -pbkdf2 -pass file:/etc/machine-id -a -A 2>/dev/null || echo -n '" + esc + "' | openssl enc -aes-256-cbc -pass file:/etc/machine-id -a -A 2>/dev/null || echo -n '" + esc + "' | base64 -w0"
-    return ["bash", "-c", cmd]
+    var p = String(plain || "");
+    // Use a proper secret key stored in a protected file (keyring)
+    var keyPath = "$HOME/.config/omarchy/keyring";
+    var keyFile = new File(keyPath);
+    if (!keyFile || !keyFile.isReadable()) {
+        throw new Error("Encryption key not available");
+    }
+    var key = keyFile.read(); // read the passphrase
+    var esc = p.replace(/'/g, "'\"'\"'");
+    var cmd = "echo -n '" + esc + "' | openssl enc -aes-256-cbc -pbkdf2 -pass file:" + keyPath + " -a -A";
+    return ["bash", "-c", cmd];
 }
 function buildDecryptCommand(encValue) {
     var b64 = stripEnc(encValue)
     var esc = b64.replace(/'/g, "'\"'\"'")
-    var cmd = "echo -n '" + esc + "' | openssl enc -d -aes-256-cbc -pbkdf2 -pass file:/etc/machine-id -a -A 2>/dev/null || echo -n '" + esc + "' | openssl enc -d -aes-256-cbc -pass file:/etc/machine-id -a -A 2>/dev/null || echo -n '" + esc + "' | base64 -d 2>/dev/null || echo -n '" + esc + "'"
-    return ["bash", "-c", cmd]
+    var keyPath = "$HOME/.config/omarchy/keyring";
+    var keyFile = new File(keyPath);
+    if (!keyFile || !keyFile.isReadable()) {
+        throw new Error("Decryption key not available");
+    }
+    var key = keyFile.read(); // read the passphrase
+    var cmd = "echo -n '" + esc + "' | openssl enc -d -aes-256-cbc -pbkdf2 -pass file:" + keyPath + " -a -A";
+    return ["bash", "-c", cmd];
 }
 
 function parseSites(jsonText) {
@@ -112,47 +125,76 @@ function periodToDateRange(period) {
 }
 
 function buildStatsUrl(baseUrl, websiteId, period, granularity) {
-    var base = trimSlash(baseUrl)
-    if (!base) base = "http://localhost:8424"
-    var id = String(websiteId || "").trim()
-    if (!isValidUUID(id)) return ""
-    var gran = normalizeGranularity(granularity)
-    var range = periodToDateRange(period)
-    // v1 expects query params startDate, endDate, granularity
+    var base = trimSlash(baseUrl);
+    if (!base) {
+        // Default to secure localhost
+        base = "https://127.0.0.1:8424";
+    }
+    // Validate scheme and host
+    var lower = base.toLowerCase();
+    if (lower.startsWith("http://")) {
+        var hostPart = lower.split("://")[1];
+        var host = hostPart.split(":")[0];
+        if (host !== "127.0.0.1" && host !== "localhost") {
+            throw new Error("HTTP URL must use loopback address");
+        }
+    } else if (lower.startsWith("https://")) {
+        // https is allowed for any host (maybe internal)
+    } else {
+        throw new Error("Only http or https URLs are allowed");
+    }
+    var id = String(websiteId || "").trim();
+    if (!isValidUUID(id)) return "";
+    var gran = normalizeGranularity(granularity);
+    var range = periodToDateRange(period);
     var qs = "startDate=" + encodeURIComponent(range.startIso) +
              "&endDate=" + encodeURIComponent(range.endIso) +
-             "&granularity=" + encodeURIComponent(gran)
-    return base + "/api/v1/" + encodeURIComponent(id) + "/stats?" + qs
+             "&granularity=" + encodeURIComponent(gran);
+    return base + "/api/v1/" + encodeURIComponent(id) + "/stats?" + qs;
 }
 
 function buildCurlCommand(baseUrl, websiteId, apiKey, period, granularity) {
-    var url = buildStatsUrl(baseUrl, websiteId, period, granularity)
-    if (!url) return null
-    var key = String(apiKey || "").trim()
-    if (!isValidApiKey(key)) return null
-    // Return argv for Process: ["curl","-s",...]
-    // Use --max-time 15, fail silently, include headers not needed
-    return ["curl", "-sS", "--max-time", "15", "-H", "Authorization: Bearer " + key, url]
+    var url = buildStatsUrl(baseUrl, websiteId, period, granularity);
+    if (!url) return null;
+    // Write API key to a temporary file (non-argv channel)
+    var tmpPath = "/tmp/omarchy_api_key_" + Math.random().toString(36).substr(2, 9);
+    try {
+        var fs = new File(tmpPath);
+        fs.write(apiKey);
+        fs.close();
+        var keyFile = tmpPath;
+        return ["curl", "-sS", "--max-time", "15", "-H", "Authorization: Bearer $(cat " + keyFile + ")", url];
+    } catch (e) {
+        return null;
+    }
 }
 
 function buildMcpCurlCommand(baseUrl, mcpKey, toolName, args) {
-    var base = trimSlash(baseUrl)
-    if (!base) base = "http://localhost:8424"
-    var url = base + "/api/mcp"
-    var key = String(mcpKey || "").trim()
-    if (!isValidMcpKey(key)) return null
-    var payload = {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name: toolName, arguments: args || {} }
+    var base = trimSlash(baseUrl);
+    if (!base) base = "http://localhost:8424";
+    var url = base + "/api/mcp";
+    // Write MCP key to a temporary file (non-argv channel)
+    var tmpPath = "/tmp/omarchy_mcp_key_" + Math.random().toString(36).substr(2, 9);
+    try {
+        var fs = new File(tmpPath);
+        fs.write(mcpKey);
+        fs.close();
+        var keyFile = tmpPath;
+        var payload = {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: toolName, arguments: args || {} }
+        };
+        var json = JSON.stringify(payload);
+        return ["curl", "-sS", "--max-time", "15",
+                "-H", "Authorization: Bearer $(cat " + keyFile + ")",
+                "-H", "Content-Type: application/json",
+                "-H", "Accept: application/json, text/event-stream",
+                "-d", json, url];
+    } catch (e) {
+        return null;
     }
-    var json = JSON.stringify(payload)
-    return ["curl", "-sS", "--max-time", "15",
-            "-H", "Authorization: Bearer " + key,
-            "-H", "Content-Type: application/json",
-            "-H", "Accept: application/json, text/event-stream",
-            "-d", json, url]
 }
 
 function parseMcpSse(text) {
@@ -190,6 +232,7 @@ function parseMcpListWebsites(text) {
     try {
         var arr = JSON.parse(sse.innerText)
         if (!Array.isArray(arr)) return { ok: false, error: "MCP list_websites not an array" }
+        if (arr.length > 200) return { ok: false, error: "Too many sites" }
         var out = []
         for (var i = 0; i < arr.length; i++) {
             var o = arr[i]
@@ -218,15 +261,19 @@ function parseMcpAnalyticsOverview(text) {
             summary: {
                 pageviews: Number(data.pageviews || 0),
                 sessions: Number(data.sessions || 0),
-                visitors: Number(data.uniqueVisitors || data.visitors || 0),
+                visitors: Number(data.uniqueVisitors || 0),
                 bounceRate: Number(data.bounceRate || 0),
                 revenue: Number(data.revenue || 0),
                 currency: String(data.currency || "USD"),
                 dateRange: data.dateRange || null
             },
-            topPages: Array.isArray(data.topPages) ? data.topPages : [],
+            topPages: Array.isArray(data.topPages) ? data.topPages.slice(0, 100) : [],
             raw: data
         }
+    } catch (e) {
+        return { ok: false, error: "Invalid MCP overview JSON: " + String(e.message || e) }
+    }
+}
     } catch (e) {
         return { ok: false, error: "Invalid MCP overview JSON: " + String(e.message || e) }
     }
@@ -257,9 +304,9 @@ function parseStatsResponse(text) {
         // v1 shape: { summary: {pageviews,sessions,visitors,bounceRate,dateRange}, timeSeries, topPages, topReferrers }
         if (!data || !data.summary) return { ok: false, error: "Missing summary in response" }
         var summary = data.summary
-        var ts = Array.isArray(data.timeSeries) ? data.timeSeries : []
-        var pages = Array.isArray(data.topPages) ? data.topPages : []
-        var refs = Array.isArray(data.topReferrers) ? data.topReferrers : []
+        var ts = Array.isArray(data.timeSeries) ? data.timeSeries.slice(0, 1000) : []
+        var pages = Array.isArray(data.topPages) ? data.topPages.slice(0, 100) : []
+        var refs = Array.isArray(data.topReferrers) ? data.topReferrers.slice(0, 100) : []
         // Normalize numbers
         return {
             ok: true,

@@ -298,104 +298,120 @@ Panel {
     else doFetch()
   }
 
-  Process {
-    id: panelFetcher
-    stdout: StdioCollector { id: pOut; waitForEnd: true }
-    stderr: StdioCollector { id: pErr; waitForEnd: true }
-    onExited: function(code) {
-      root.loading = false
-      if (code !== 0) {
-        var msg = String(pErr.text || pOut.text || "").trim() || ("curl exited " + code)
-        root.lastError = msg.slice(0, 400)
-        return
-      }
-      var parsed = Model.parseStatsResponse(String(pOut.text || ""))
-      if (!parsed.ok) {
-        root.lastError = String(parsed.error || "Parse error")
-        root.stats = parsed
-        if (hostWidget) { hostWidget.lastError = root.lastError; hostWidget.lastStats = parsed }
-      } else {
-        root.lastError = ""
-        root.stats = parsed
-        root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
-        if (hostWidget) { hostWidget.lastStats = parsed; hostWidget.lastError = ""; hostWidget.lastUpdatedLabel = root.lastUpdatedLabel }
-      }
-    }
-  }
+Process {
+     id: panelFetcher
+     stdout: StdioCollector { id: pOut; waitForEnd: true }
+     stderr: StdioCollector { id: pErr; waitForEnd: true }
+     onExited: function(code) {
+       root.loading = false
+       if (code !== 0) {
+         var msg = String(pErr.text || pOut.text || "").trim() || ("curl exited " + code)
+         root.lastError = msg.slice(0, 400)
+         return
+       }
+       // Limit response size to 1 MB to prevent memory exhaustion
+       if (pOut.text.length > 1048576) {
+         root.lastError = "Response too large ( > 1 MB )"
+         return
+       }
+       var parsed = Model.parseStatsResponse(String(pOut.text || ""))
+       if (!parsed.ok) {
+         root.lastError = String(parsed.error || "Parse error")
+         root.stats = parsed
+         if (hostWidget) { hostWidget.lastError = root.lastError; hostWidget.lastStats = parsed }
+       } else {
+         root.lastError = ""
+         root.stats = parsed
+         root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
+         if (hostWidget) { hostWidget.lastStats = parsed; hostWidget.lastError = ""; hostWidget.lastUpdatedLabel = root.lastUpdatedLabel }
+       }
+     }
+   }
 
-  Process {
-    id: mcpListFetcher
-    stdout: StdioCollector { id: mcpListOut; waitForEnd: true }
-    stderr: StdioCollector { id: mcpListErr; waitForEnd: true }
-    onExited: function(code) {
-      root.mcpLoading = false
-      if (code !== 0) {
-        var msg = String(mcpListErr.text || mcpListOut.text || "").trim() || ("curl exited " + code)
-        root.mcpError = msg.slice(0, 400)
-        root.lastError = root.mcpError
-        return
-      }
-      var parsed = Model.parseMcpListWebsites(String(mcpListOut.text || ""))
-      if (!parsed.ok) {
-        root.mcpError = String(parsed.error || "Parse error")
-        root.lastError = root.mcpError
-        return
-      }
-      root.mcpError = ""
-      root.lastError = ""
-      root.mcpSites = parsed.sites
-      // if hostWidget exists, sync its mcp sites? BarWidget will fetch separately
-      // auto-select first if none
-      if (parsed.sites.length > 0 && !Model.getSiteById(parsed.sites, configuredSelectedId)) {
-        // keep effective selection logic — no auto-persist, just trigger fetch
-        if (root.opened && effectiveMcpId) doFetch()
-      } else if (root.opened) {
-        doFetch()
-      }
-    }
-  }
+Process {
+     id: mcpListFetcher
+     stdout: StdioCollector { id: mcpListOut; waitForEnd: true }
+     stderr: StdioCollector { id: mcpListErr; waitForEnd: true }
+     onExited: function(code) {
+       root.mcpLoading = false
+       if (code !== 0) {
+         var msg = String(mcpListErr.text || mcpListOut.text || "").trim() || ("curl exited " + code)
+         root.mcpError = msg.slice(0, 400)
+         root.lastError = root.mcpError
+         return
+       }
+       // Limit response size to 1 MB to prevent memory exhaustion
+       if (mcpListOut.text.length > 1048576) {
+         root.mcpError = "MCP list too large"
+         root.lastError = root.mcpError
+         return
+       }
+       var parsed = Model.parseMcpListWebsites(String(mcpListOut.text || ""))
+       if (!parsed.ok) {
+         root.mcpError = String(parsed.error || "Parse error")
+         root.lastError = root.mcpError
+         return
+       }
+       root.mcpError = ""
+       root.lastError = ""
+       root.mcpSites = parsed.sites
+       // if hostWidget exists, sync its mcp sites? BarWidget will fetch separately
+       // auto-select first if none
+       if (parsed.sites.length > 0 && !Model.getSiteById(parsed.sites, configuredSelectedId)) {
+         // keep effective selection logic — no auto-persist, just trigger fetch
+         if (root.opened && effectiveMcpId) doFetch()
+       } else if (root.opened) {
+         doFetch()
+       }
+     }
+   }
 
-  Process {
-    id: mcpStatsFetcher
-    stdout: StdioCollector { id: mcpStatsOut; waitForEnd: true }
-    stderr: StdioCollector { id: mcpStatsErr; waitForEnd: true }
-    onExited: function(code) {
-      root.loading = false
-      if (code !== 0) {
-        var msg = String(mcpStatsErr.text || mcpStatsOut.text || "").trim() || ("curl exited " + code)
-        root.lastError = msg.slice(0, 400)
-        return
-      }
-      var parsed = Model.parseMcpAnalyticsOverview(String(mcpStatsOut.text || ""))
-      if (!parsed.ok) {
-        root.lastError = String(parsed.error || "Parse error")
-        root.stats = parsed
-        if (hostWidget) { hostWidget.lastError = root.lastError; hostWidget.lastStats = parsed }
-        return
-      }
-      // Map MCP overview to panel's expected stats shape
-      var mapped = {
-        ok: true,
-        summary: {
-          pageviews: parsed.summary.pageviews,
-          sessions: parsed.summary.sessions,
-          visitors: parsed.summary.visitors,
-          bounceRate: parsed.summary.bounceRate || 0,
-          revenue: parsed.summary.revenue || 0,
-          currency: parsed.summary.currency || "USD",
-          dateRange: parsed.summary.dateRange || null
-        },
-        topPages: parsed.topPages || [],
-        topReferrers: [],
-        timeSeries: [],
-        raw: parsed.raw
-      }
-      root.lastError = ""
-      root.stats = mapped
-      root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
-      if (hostWidget) { hostWidget.lastStats = mapped; hostWidget.lastError = ""; hostWidget.lastUpdatedLabel = root.lastUpdatedLabel }
-    }
-  }
+Process {
+     id: mcpStatsFetcher
+     stdout: StdioCollector { id: mcpStatsOut; waitForEnd: true }
+     stderr: StdioCollector { id: mcpStatsErr; waitForEnd: true }
+     onExited: function(code) {
+       root.loading = false
+       if (code !== 0) {
+         var msg = String(mcpStatsErr.text || mcpStatsOut.text || "").trim() || ("curl exited " + code)
+         root.lastError = msg.slice(0, 400)
+         return
+       }
+       // Limit response size to 1 MB to prevent memory exhaustion
+       if (mcpStatsOut.text.length > 1048576) {
+         root.lastError = "MCP stats response too large"
+         return
+       }
+       var parsed = Model.parseMcpAnalyticsOverview(String(mcpStatsOut.text || ""))
+       if (!parsed.ok) {
+         root.lastError = String(parsed.error || "Parse error")
+         root.stats = parsed
+         if (hostWidget) { hostWidget.lastError = root.lastError; hostWidget.lastStats = parsed }
+         return
+       }
+       // Map MCP overview to panel's expected stats shape
+       var mapped = {
+         ok: true,
+         summary: {
+           pageviews: parsed.summary.pageviews,
+           sessions: parsed.summary.sessions,
+           visitors: parsed.summary.visitors,
+           bounceRate: parsed.summary.bounceRate || 0,
+           revenue: parsed.summary.revenue || 0,
+           currency: parsed.summary.currency || "USD",
+           dateRange: parsed.summary.dateRange || null
+         },
+         topPages: parsed.topPages || [],
+         topReferrers: [],
+         timeSeries: [],
+         raw: parsed.raw
+       }
+       root.lastError = ""
+       root.stats = mapped
+       root.lastUpdatedLabel = Qt.formatDateTime(new Date(), "hh:mm:ss")
+       if (hostWidget) { hostWidget.lastStats = mapped; hostWidget.lastError = ""; hostWidget.lastUpdatedLabel = root.lastUpdatedLabel }
+     }
+   }
 
   function openDashboard() {
     var base = Model.trimSlash(instanceUrl)
@@ -490,15 +506,16 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
             }
             Item { width: Style.space(6); height: 1 }
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.lastUpdatedLabel ? ("updated " + root.lastUpdatedLabel) : ""
-              color: Qt.darker(root.contentForeground, 1.5)
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              visible: text !== ""
-              elide: Text.ElideRight
-            }
+Text {
+               plaintext: true
+               anchors.verticalCenter: parent.verticalCenter
+               text: root.lastUpdatedLabel ? ("updated " + root.lastUpdatedLabel) : ""
+               color: Qt.darker(root.contentForeground, 1.5)
+               font.family: root.contentFontFamily
+               font.pixelSize: Style.font.caption
+               visible: text !== ""
+               elide: Text.ElideRight
+             }
           }
           Row {
             id: rightRow
@@ -722,15 +739,16 @@ Panel {
         }
 
         // ---- Error / loading
-        Text {
-          visible: root.lastError !== ""
-          width: parent.width
-          wrapMode: Text.Wrap
-          text: "⚠ " + root.lastError
-          color: Color.urgent
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.caption
-        }
+Text {
+               plaintext: true
+               visible: root.lastError !== ""
+               width: parent.width
+               wrapMode: Text.Wrap
+               text: "⚠ " + root.lastError
+               color: Color.urgent
+               font.family: root.contentFontFamily
+               font.pixelSize: Style.font.caption
+             }
 
         Row {
           visible: root.loading
