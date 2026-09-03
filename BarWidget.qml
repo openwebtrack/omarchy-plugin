@@ -134,17 +134,24 @@ BarWidget {
   }
 
   function fetchMcpSites() {
-    function syncErr(m){ if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=m; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=m } }
-    if (!Model.isValidMcpKey(mcpKey)) { lastError = "Configure MCP key owt_mcp_... in panel"; syncErr(lastError); return }
+    if (!Model.isValidMcpKey(mcpKey)) {
+      lastError = "Configure MCP key owt_mcp_... in panel"
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+      return
+    }
     var cmd
     try {
       cmd = Model.buildMcpCurlCommand(instanceUrl, mcpKey, "list_websites", {})
     } catch (e) {
       lastError = String(e.message || e).slice(0,200)
-      syncErr(lastError)
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
       return
     }
-    if (!cmd) { lastError = "Failed to build MCP command"; syncErr(lastError); return }
+    if (!cmd) {
+      lastError = "Failed to build MCP command"
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+      return
+    }
     if (mcpListFetcher.running) mcpListFetcher.running = false
     if (mcpFetcher.running) mcpFetcher.running = false
     if (fetcher.running) fetcher.running = false
@@ -155,10 +162,13 @@ BarWidget {
   }
 
   function refresh() {
-    function syncErr2(m){ if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=m; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=m } }
     if (useMcp) {
       if (mcpSites.length === 0) { fetchMcpSites(); return }
-      if (!effectiveActiveSite) { lastError = "No website selected"; syncErr2(lastError); return }
+      if (!effectiveActiveSite) {
+        lastError = "No website selected"
+        if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+        return
+      }
       var range = Model.periodToDateRange(period)
       var cmd
       try {
@@ -166,10 +176,14 @@ BarWidget {
           { websiteId: effectiveActiveSite.id, startDate: range.startIso, endDate: range.endIso })
       } catch (e) {
         lastError = String(e.message || e).slice(0,200)
-        syncErr2(lastError)
+        if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
         return
       }
-      if (!cmd) { lastError = "Failed to build MCP command"; syncErr2(lastError); return }
+      if (!cmd) {
+        lastError = "Failed to build MCP command"
+        if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+        return
+      }
       if (mcpFetcher.running) mcpFetcher.running = false
       if (mcpListFetcher.running) mcpListFetcher.running = false
       if (fetcher.running) fetcher.running = false
@@ -177,22 +191,38 @@ BarWidget {
       mcpFetcher.running = true
       loading = true
       lastError = ""
-      syncErr2("")
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=""; if("mcpError" in panelLoader.item) panelLoader.item.mcpError="" }
       return
     }
-    if (sites.length === 0) { lastError = "No websites configured"; syncErr2(lastError); return }
-    if (!activeSite) { lastError = "No website selected"; syncErr2(lastError); return }
+    if (sites.length === 0) {
+      lastError = "No websites configured"
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+      return
+    }
+    if (!activeSite) {
+      lastError = "No website selected"
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+      return
+    }
     var key = String(activeSite.apiKey || "").trim()
-    if (!Model.isValidApiKey(key)) { lastError = "Invalid API key for " + activeSite.name; syncErr2(lastError); return }
+    if (!Model.isValidApiKey(key)) {
+      lastError = "Invalid API key for " + activeSite.name
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+      return
+    }
     var cmd2
     try {
       cmd2 = Model.buildCurlCommand(instanceUrl, activeSite.id, key, period, granularity)
     } catch (e) {
       lastError = String(e.message || e).slice(0,200)
-      syncErr2(lastError)
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
       return
     }
-    if (!cmd2) { lastError = "Failed to build v1 URL"; syncErr2(lastError); return }
+    if (!cmd2) {
+      lastError = "Failed to build v1 URL"
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=lastError }
+      return
+    }
     if (fetcher.running) fetcher.running = false
     if (mcpFetcher.running) mcpFetcher.running = false
     if (mcpListFetcher.running) mcpListFetcher.running = false
@@ -332,34 +362,36 @@ Process {
      }
    }
 
-   Process {
-     id: mcpListFetcher
-     stdout: StdioCollector { id: mcpListOut; waitForEnd: true }
-     stderr: StdioCollector { id: mcpListErr; waitForEnd: true }
-     onExited: function(code) {
-       root.mcpLoading = false
-       function syncPanelError(err) {
-         if (panelLoader.item) {
-           if ("lastError" in panelLoader.item) panelLoader.item.lastError = err
-           if ("mcpError" in panelLoader.item) panelLoader.item.mcpError = err
-         }
-       }
-       if (code !== 0) {
-         var msg = String(mcpListErr.text || mcpListOut.text || "").trim() || ("curl exited " + code)
-         root.lastError = msg.slice(0,220)
-         syncPanelError(root.lastError)
-         return
-       }
-       if (mcpListOut.text.length > 1048576) { root.lastError = "MCP list too large"; syncPanelError(root.lastError); return }
-       var parsed = Model.parseMcpListWebsites(String(mcpListOut.text || ""))
-       if (!parsed.ok) { root.lastError = String(parsed.error||"MCP error").slice(0,220); syncPanelError(root.lastError); return }
-       root.mcpSites = parsed.sites
-       root.lastError = ""
-       syncPanelError("")
-       if (root.effectiveActiveSite) Qt.callLater(refresh)
-       if (panelLoader.item && "mcpSites" in panelLoader.item) panelLoader.item.mcpSites = parsed.sites
-     }
-   }
+  Process {
+    id: mcpListFetcher
+    stdout: StdioCollector { id: mcpListOut; waitForEnd: true }
+    stderr: StdioCollector { id: mcpListErr; waitForEnd: true }
+    onExited: function(code) {
+      root.mcpLoading = false
+      if (code !== 0) {
+        var msg = String(mcpListErr.text || mcpListOut.text || "").trim() || ("curl exited " + code)
+        root.lastError = msg.slice(0,220)
+        if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=root.lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=root.lastError }
+        return
+      }
+      if (mcpListOut.text.length > 1048576) {
+        root.lastError = "MCP list too large"
+        if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=root.lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=root.lastError }
+        return
+      }
+      var parsed = Model.parseMcpListWebsites(String(mcpListOut.text || ""))
+      if (!parsed.ok) {
+        root.lastError = String(parsed.error||"MCP error").slice(0,220)
+        if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=root.lastError; if("mcpError" in panelLoader.item) panelLoader.item.mcpError=root.lastError }
+        return
+      }
+      root.mcpSites = parsed.sites
+      root.lastError = ""
+      if (panelLoader.item){ if("lastError" in panelLoader.item) panelLoader.item.lastError=""; if("mcpError" in panelLoader.item) panelLoader.item.mcpError="" }
+      if (root.effectiveActiveSite) Qt.callLater(refresh)
+      if (panelLoader.item && "mcpSites" in panelLoader.item) panelLoader.item.mcpSites = parsed.sites
+    }
+  }
 
   Process {
      id: mcpFetcher

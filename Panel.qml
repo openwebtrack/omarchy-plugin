@@ -120,13 +120,12 @@ Panel {
     showSetup = !hasConnection
   }
   onEffectiveIdChanged: {
-    // website changed (per-site mode) -> refetch, clear stale stats so chart visibly updates
+    // website changed (per-site mode) -> refetch
     if (!useMcp) {
       stats = null
       lastError = ""
       if (hostWidget) hostWidget.lastStats = null
       if (opened && effectiveId) doFetch()
-      else if (tsCanvas) tsCanvas.requestPaint()
     }
   }
   onEffectiveMcpIdChanged: {
@@ -135,11 +134,6 @@ Panel {
       lastError = ""
       if (hostWidget) hostWidget.lastStats = null
       if (opened && effectiveMcpId) doFetch()
-      else if (tsCanvas) tsCanvas.requestPaint()
-      else {
-        // ensure canvas repaints even when closed so it shows fresh data on next open
-        Qt.callLater(function(){ if (tsCanvas) tsCanvas.requestPaint() })
-      }
     }
   }
   onMcpSitesChanged: {
@@ -870,14 +864,14 @@ Text {
 
         PanelSeparator { visible: root.stats && root.stats.ok; foreground: root.contentForeground }
 
-        // ---- TimeSeries — nice area graph (Canvas) + fallback for MCP
+        // ---- TimeSeries — graph with real data only (no synthetic fallback)
         Column {
           width: parent.width
           spacing: Style.space(8)
-          visible: (root.stats && root.stats.ok && root.stats.timeSeries && root.stats.timeSeries.length > 1) || (root.useMcp && root.stats && root.stats.ok)
+          visible: root.stats && root.stats.ok && root.stats.timeSeries && root.stats.timeSeries.length > 1
 
           Text {
-            text: root.useMcp ? "TRAFFIC OVERVIEW" : "PAGEVIEWS OVER TIME (" + root.granularity + ")"
+            text: "PAGEVIEWS OVER TIME (" + root.granularity + ")"
             color: Qt.darker(root.contentForeground, 1.4)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.caption
@@ -900,38 +894,11 @@ Text {
               anchors.fill: parent
               anchors.margins: Style.space(8)
               property var points: (root.stats && root.stats.timeSeries) ? root.stats.timeSeries.slice(-14) : []
-              property var topPages: (root.stats && root.stats.topPages) ? root.stats.topPages.slice(0,6) : []
-              // For MCP without timeSeries, synthesize 7-day visitors from summary totals
-              // Explicitly depend on root.stats revision so switching website triggers recompute even when points is empty
-              property var statsRevision: root.stats
-              property var chartData: {
-                // touch statsRevision to create QML dependency
-                var revRef = statsRevision
-                if (points && points.length >= 2) return points
-                // fallback: build 7-day mock from summary to match website screenshot
-                if (revRef && revRef.ok) {
-                  var total = revRef.summary.visitors || 193
-                  var rev = revRef.summary.revenue || 11880
-                  // shape matching screenshot: Aug26 24, Aug27 25, Aug28 23, Aug29 18, Aug30 32, Sep1 37, Sep2 8, Sep3 1
-                  var shape = [24,25,23,18,32,37,8,1]
-                  var scale = total / shape.reduce(function(a,b){return a+b},0)
-                  var out=[]
-                  var baseDate = new Date(); baseDate.setDate(baseDate.getDate()-7)
-                  for (var i=0;i<7;i++) {
-                    var d = new Date(baseDate); d.setDate(baseDate.getDate()+i)
-                    out.push({ date: d.toISOString().slice(0,10), pageviews: Math.round(shape[i]*scale), visitors: Math.round(shape[i]*scale), revenue: i===1? Math.round(rev*0.55) : i===4? Math.round(rev*0.15) : 0 })
-                  }
-                  return out
-                }
-                return []
-              }
+              property var chartData: points
               property real maxVisitors: chartData.length ? Math.max.apply(null, chartData.map(function(p){return Number(p.visitors ?? p.pageviews ?? 0)})) * 1.18 : 42
               property real maxRevenue: 100
-              property bool useMcp: root.useMcp
               onPointsChanged: requestPaint()
-              onTopPagesChanged: requestPaint()
               onChartDataChanged: requestPaint()
-              onStatsRevisionChanged: requestPaint()
               onMaxVisitorsChanged: requestPaint()
               onWidthChanged: requestPaint()
               onHeightChanged: requestPaint()
@@ -1044,29 +1011,6 @@ Text {
                   ctx.fillText(lab2, padL + l2*step + step/2, padT+gh+14)
                 }
               }
-            }
-          }
-
-          // Small fallback row when MCP (no timeSeries) — show revenue if present
-          Row {
-            visible: root.useMcp && root.stats && root.stats.ok && (!root.stats.timeSeries || root.stats.timeSeries.length === 0)
-            width: parent.width
-            spacing: Style.space(8)
-            Text {
-              text: root.stats && root.stats.summary && root.stats.summary.revenue ? "Revenue: " + Model.formatNumber(root.stats.summary.revenue) + " " + (root.stats.summary.currency||"USD") : "No time series — totals above"
-              color: Qt.darker(root.contentForeground, 1.4)
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              textFormat: Text.PlainText
-            }
-            Item { width: Style.space(8); height: 1 }
-            Text {
-              text: root.stats ? Model.formatNumber(root.stats.summary.pageviews) + " pageviews" : ""
-              color: Style.selectedStateColor(root.contentForeground, Color.accent)
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              textFormat: Text.PlainText
             }
           }
         }
